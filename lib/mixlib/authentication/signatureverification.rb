@@ -50,6 +50,8 @@ module Mixlib
 
       include Mixlib::Authentication::SignedHeaderAuth
 
+      V1_2_SUPPORTED_DIGESTER_ALGORITHMS = ['SHA1','MD5'].freeze
+      
       def initialize(request=nil)
         @auth_request = HTTPAuthenticationRequest.new(request) if request
 
@@ -69,7 +71,7 @@ module Mixlib
       # the signature in the request
       # ====Headers
       #
-      # X-Ops-Sign: algorithm=sha1;version=1.0;
+      # X-Ops-Sign: version=1.0;
       # X-Ops-UserId: <user_id>
       # X-Ops-Timestamp:
       # X-Ops-Content-Hash: 
@@ -83,11 +85,7 @@ module Mixlib
         begin
           parts = parse_signing_description
 
-          # version 1.0 clients don't include their algorithm in the
-          # signing description, so default to sha1
-          parts[:algorithm] ||= 'sha1'
-
-          verify_signature(parts[:algorithm], parts[:version])
+          verify_signature(parts[:version])
           verify_timestamp
           verify_content_hash
 
@@ -136,15 +134,75 @@ module Mixlib
         end
       end
 
+      # Deprecate this API.
       def verify_signature(algorithm, version)
-        candidate_block = canonicalize_request(algorithm, version)
-        request_decrypted_block = @user_secret.public_decrypt(Base64.decode64(request_signature))
-        @valid_signature = (request_decrypted_block == candidate_block)
+        Mixlib::Authentication::Log.warn("DEPRECATED: Use the verify_signature(version) API instead.")
+      end
 
-        # Keep the debug messages lined up so it's easy to scan them
+      def verify_signature(version)
+        expected_block = canonicalize_request(version)
+        signature = Base64.decode64(request_signature)
+
         Mixlib::Authentication::Log.debug("Verifying request signature:")
-        Mixlib::Authentication::Log.debug(" Expected Block is: '#{candidate_block}'")
-        Mixlib::Authentication::Log.debug("Decrypted block is: '#{request_decrypted_block}'")
+
+        case version
+        when '1.0', '1.1'
+          request_decrypted_block = @user_secret.public_decrypt(signature)
+          @valid_signature = (request_decrypted_block == expected_block)
+
+          Mixlib::Authentication::Log.debug(" Expected Block is: '#{expected_block}'")
+          Mixlib::Authentication::Log.debug("Decrypted block is: '#{request_decrypted_block}'")
+        when '1.2' 
+          # 1. Public decrypt, result is the ASN1 encoded digest_info
+          # 2. ASN1 decode digest_info, results are the digest and digest_algorithm
+          # 3. Verify
+          # This is documented as RSASSA-PKCS1-v1_5 signature scheme in PKCS1 v2 (http://www.ietf.org/rfc/rfc2437.txt)
+
+          # 1. Public decrypt
+          digest_info = @user_secret.public_decrypt(signature)
+
+          # 2. ASN1 decode digest_info
+          #
+          # DigestInfo ::= SEQUENCE{
+          #   digestAlgorithm OBJECT IDENTIFIER,
+          #   digest          OCTET STRING}
+          # 
+          # PKCS1 v2 recommends supporting SHA1 for new applications and MD2, MD5
+          # for backwards compatibility to PKCS1 v1.5. MD4 support should explicitely
+          # be dropped for security reasons. The OpenSSL library does not seem to
+          # support MD2 RSA signatures any more.
+          #
+          # Supported digest algorithms (ASN1 OID notation):
+          #
+          # SHA1 OBJECT IDENTIFIER ::=
+          #  {iso(1) identified-organization(3) oiw(14) secsig(3)
+          #   algorithms(2) 26}
+          # (http://oid-info.com/get/1.3.14.3.2.26)
+          #
+          # MD5 OBJECT IDENTIFIER ::=
+          #  {iso(1) member-body(2) US(840) rsadsi(113549)
+          #   digestAlgorithm(2) 5}
+          # (http://oid-info.com/get/1.2.840.113549.2.5)
+          begin
+            decoded_digest_info = OpenSSL::ASN1.decode(digest_info)
+            digest_algorithm = decoded_digest_info.value[0].value[0].value.upcase
+          rescue => e
+            raise AuthenticationError, "Bad signature format, make sure to sign as specified in the RSASSA-PKCS1-v1_5 signature scheme."
+          end
+          Mixlib::Authentication::Log.debug("decrypted ASN.1 decoded signature : '#{decoded_digest_info.inspect}'")
+          
+          unless V1_2_SUPPORTED_DIGESTER_ALGORITHMS.include?(digest_algorithm)
+            raise AuthenticationError, "Bad digester '#{digest_algorithm}' (allowed for protocol version 1.2: #{V1_2_SUPPORTED_DIGESTER_ALGORITHMS.inspect})"
+          end
+
+          digester = OpenSSL::Digest.class_eval(digest_algorithm).new
+
+          # 3. Verify
+          @valid_signature = @user_secret.verify(digester, signature, expected_block)
+        else
+          raise AuthenticationError, "Bad version '#{sign_version}' (allowed: #{SUPPORTED_VERSIONS.inspect})"
+        end
+
         Mixlib::Authentication::Log.debug("Signatures match? : '#{@valid_signature}'")
 
         @valid_signature

@@ -22,6 +22,7 @@ require 'base64'
 require 'digest/sha1'
 require 'mixlib/authentication'
 require 'mixlib/authentication/digester'
+require 'net/ssh'
 
 module Mixlib
   module Authentication
@@ -29,12 +30,9 @@ module Mixlib
     module SignedHeaderAuth
 
       NULL_ARG = Object.new
-      SUPPORTED_ALGORITHMS = ['sha1'].freeze
-      SUPPORTED_VERSIONS = ['1.0', '1.1'].freeze
+      SUPPORTED_VERSIONS = ['1.0', '1.1', '1.2'].freeze
 
-      DEFAULT_SIGN_ALGORITHM = 'sha1'.freeze
       DEFAULT_PROTO_VERSION = '1.0'.freeze
-
 
       # === signing_object
       # This is the intended interface for signing requests with the
@@ -60,16 +58,12 @@ module Mixlib
       #   request body.
       # ==== Protocol Versioning Parameters:
       # * `:proto_version`: The version of the signing protocol to use.
-      #   Currently defaults to 1.0, but version 1.1 is also available.
+      #   Currently defaults to 1.0, but versions 1.1 and 1.2 are also available.
       # ==== Other Parameters:
       # These parameters are accepted but not used in the computation of the signature.
       # * `:host`: The host part of the URI
       def self.signing_object(args={ })
         SigningObject.new(args[:http_method], args[:path], args[:body], args[:host], args[:timestamp], args[:user_id], args[:file], args[:proto_version])
-      end
-
-      def algorithm
-        DEFAULT_SIGN_ALGORITHM
       end
 
       def proto_version
@@ -79,28 +73,64 @@ module Mixlib
       # Build the canonicalized request based on the method, other headers, etc.
       # compute the signature from the request, using the looked-up user secret
       # ====Parameters
-      # private_key<OpenSSL::PKey::RSA>:: user's RSA private key.
-      def sign(private_key, sign_algorithm=algorithm, sign_version=proto_version)
-        # Our multiline hash for authorization will be encoded in multiple header
-        # lines - X-Ops-Authorization-1, ... (starts at 1, not 0!)
+      # keypair<OpenSSL::PKey::RSA>:: user's RSA keypair. The OpenSSL::PKey::RSA
+      # container can either be filled with a private/public keypair or just a
+      # public key. From x-ops protocol version 1.2 on the sign method will look
+      # out to sign the request via a ssh-agent, if only a public key is present.
+      def sign(keypair, sign_version=proto_version)
         header_hash = {
-          "X-Ops-Sign" => "algorithm=#{sign_algorithm};version=#{sign_version};",
+          "X-Ops-Sign" => "version=#{sign_version};",
           "X-Ops-Userid" => user_id,
           "X-Ops-Timestamp" => canonical_time,
           "X-Ops-Content-Hash" => hashed_body,
         }
+        string_to_sign = canonicalize_request(sign_version)
+        Mixlib::Authentication::Log.debug "Canonicalized request to sign: '#{string_to_sign}'\nHeader hash: #{header_hash.inspect}"
+        
+        # Sign
+        case sign_version
+        when '1.0', '1.1'
+          if keypair.private?
+            Mixlib::Authentication::Log.debug "Private key supplied, signing with SHA1 digester and x-ops homebrew signature scheme."
+            
+            signature = Base64.encode64(keypair.private_encrypt(string_to_sign)).chomp
+          else
+            raise AuthenticationError, "No private key supplied. Protocol version #{sign_version} only supports usage with private keys!"
+          end
+        when '1.2'
+          if keypair.private?
+            Mixlib::Authentication::Log.debug "Private key supplied, signing with SHA1 digester and RSASSA-PKCS1-v1_5 signature scheme."
+            signature = Base64.encode64(keypair.sign(OpenSSL::Digest::SHA1.new, string_to_sign)).chomp
+          else # the SSH2 Protocol implicitely uses a SHA1 digester
+            Mixlib::Authentication::Log.debug "No private key supplied, attempt to sign with ssh-agent (with SHA1 digester and RSASSA-PKCS1-v1_5 signature scheme)."
+            begin
+              agent = Net::SSH::Authentication::Agent.connect
+            rescue => e
+              raise AuthenticationError, "Could not connect to ssh-agent. Make sure the SSH_AUTH_SOCK environment variable is set properly!"
+            end
+            begin
+              ssh2_signature = agent.sign(keypair.public_key, string_to_sign)
+            rescue => e
+              raise AuthenticationError, "Ssh-agent could not sign your request. Make sure your key is loaded with ssh-add! (#{e.class.name}: #{e.message})"
+            end
+            # extract signature from SSH Agent response => skip first 15 bytes for RSA keys
+            # (see http://api.libssh.org/rfc/PROTOCOL.agent for details)
+            signature = Base64.encode64(ssh2_signature[15..-1]).chomp
+          end
+        end
 
-        string_to_sign = canonicalize_request(sign_algorithm, sign_version)
-        signature = Base64.encode64(private_key.private_encrypt(string_to_sign)).chomp
+        # Our multiline hash for authorization will be encoded in multiple header
+        # lines - X-Ops-Authorization-1, ... (starts at 1, not 0!)
         signature_lines = signature.split(/\n/)
         signature_lines.each_index do |idx|
           key = "X-Ops-Authorization-#{idx + 1}"
           header_hash[key] = signature_lines[idx]
         end
 
-        Mixlib::Authentication::Log.debug "String to sign: '#{string_to_sign}'\nHeader hash: #{header_hash.inspect}"
-
         header_hash
+      rescue => e
+        Mixlib::Authentication::Log.debug "Failed to sign request: #{e.class.name}: #{e.message}"
+        raise e
       end
 
       # Build the canonicalized time based on utc & iso8601
@@ -135,10 +165,9 @@ module Mixlib
       #
       # ====Parameters
       #
-      #
-      def canonicalize_request(sign_algorithm=algorithm, sign_version=proto_version)
-        unless SUPPORTED_ALGORITHMS.include?(sign_algorithm) && SUPPORTED_VERSIONS.include?(sign_version)
-          raise AuthenticationError, "Bad algorithm '#{sign_algorithm}' (allowed: #{SUPPORTED_ALGORITHMS.inspect}) or version '#{sign_version}' (allowed: #{SUPPORTED_VERSIONS.inspect})"
+      def canonicalize_request(sign_version=proto_version)
+        unless SUPPORTED_VERSIONS.include?(sign_version)
+          raise AuthenticationError, "Bad version '#{sign_version}' (allowed: #{SUPPORTED_VERSIONS.inspect})"
         end
 
         canonical_x_ops_user_id = canonicalize_user_id(user_id, sign_version)
@@ -147,7 +176,7 @@ module Mixlib
 
       def canonicalize_user_id(user_id, proto_version)
         case proto_version
-        when "1.1"
+        when "1.1", "1.2"
           digester.hash_string(user_id)
         when "1.0"
           user_id

@@ -25,6 +25,7 @@ require 'ostruct'
 require 'openssl'
 require 'mixlib/authentication/signatureverification'
 require 'time'
+require 'net/ssh'
 
 # TODO: should make these regular spec-based mock objects.
 class MockRequest
@@ -66,69 +67,157 @@ end
 #Mixlib::Authentication::Log.logger = Logger.new(STDERR)
 #Mixlib::Authentication::Log.level :debug
 
-describe "Mixlib::Authentication::SignedHeaderAuth" do
+describe "Mixlib::Authentication::SignedHeaderAuth, protocol version 1.0 (default)" do
 
   # NOTE: Version 1.0 will be the default until Chef 11 is released.
 
-  it "should generate the correct string to sign and signature, version 1.0 (default)" do
-
+  it "should generate the correct string to sign and signature" do
+    V1_0_SIGNING_OBJECT.proto_version.should == "1.0"
     V1_0_SIGNING_OBJECT.canonicalize_request.should == V1_0_CANONICAL_REQUEST
-
-    # If you need to regenerate the constants in this test spec, print out
-    # the results of res.inspect and copy them as appropriate into the
-    # the constants in this file.
     V1_0_SIGNING_OBJECT.sign(PRIVATE_KEY).should == EXPECTED_SIGN_RESULT_V1_0
   end
+  
+  it "should generate the correct string to sign and signature with explicit version" do
+    version = '1.0'
+    obj = V1_0_SIGNING_OBJECT.clone
 
-  it "should generate the correct string to sign and signature, version 1.1" do
-    V1_1_SIGNING_OBJECT.proto_version.should == "1.1"
-    V1_1_SIGNING_OBJECT.canonicalize_request.should == V1_1_CANONICAL_REQUEST
-
-    # If you need to regenerate the constants in this test spec, print out
-    # the results of res.inspect and copy them as appropriate into the
-    # the constants in this file.
-    V1_1_SIGNING_OBJECT.sign(PRIVATE_KEY).should == EXPECTED_SIGN_RESULT_V1_1
+    obj.proto_version = "0.9"
+    obj.proto_version.should == "0.9"
+    obj.canonicalize_request(version).should == V1_0_CANONICAL_REQUEST
+    obj.sign(PRIVATE_KEY, version).should == EXPECTED_SIGN_RESULT_V1_0
   end
 
-  it "should generate the correct string to sign and signature for non-default proto version when used as a mixin" do
-    algorithm = 'sha1'
-    version = '1.1'
-
-    V1_1_SIGNING_OBJECT.proto_version = "1.0"
-    V1_1_SIGNING_OBJECT.proto_version.should == "1.0"
-    V1_1_SIGNING_OBJECT.canonicalize_request(algorithm, version).should == V1_1_CANONICAL_REQUEST
-
-    # If you need to regenerate the constants in this test spec, print out
-    # the results of res.inspect and copy them as appropriate into the
-    # the constants in this file.
-    V1_1_SIGNING_OBJECT.sign(PRIVATE_KEY, algorithm, version).should == EXPECTED_SIGN_RESULT_V1_1
-  end
-
-  it "should not choke when signing a request for a long user id with version 1.1" do
-    lambda { LONG_SIGNING_OBJECT.sign(PRIVATE_KEY, 'sha1', '1.1') }.should_not raise_error
-  end
-
-  it "should choke when signing a request for a long user id with version 1.0" do
-    lambda { LONG_SIGNING_OBJECT.sign(PRIVATE_KEY, 'sha1', '1.0') }.should raise_error
-  end
-
-  it "should choke when signing a request with a bad version" do
-    lambda { V1_1_SIGNING_OBJECT.sign(PRIVATE_KEY, 'sha1', 'poo') }.should raise_error
-  end
-
-  it "should choke when signing a request with a bad algorithm" do
-    lambda { V1_1_SIGNING_OBJECT.sign(PRIVATE_KEY, 'sha_poo', '1.1') }.should raise_error
+  it "should choke when signing a request for a long user id" do
+    lambda { LONG_SIGNING_OBJECT.sign(PRIVATE_KEY, '1.0') }.should raise_error
   end
 
 end
 
-describe "Mixlib::Authentication::SignatureVerification" do
-
-  before(:each) do
-    @user_private_key = PRIVATE_KEY
+describe "Mixlib::Authentication::SignedHeaderAuth, protocol version 1.1" do
+  
+  it "should generate the correct string to sign and signature" do
+    V1_1_SIGNING_OBJECT.proto_version.should == "1.1"
+    V1_1_SIGNING_OBJECT.canonicalize_request.should == V1_1_CANONICAL_REQUEST
+    V1_1_SIGNING_OBJECT.sign(PRIVATE_KEY).should == EXPECTED_SIGN_RESULT_V1_1
   end
 
-  it "should authenticate a File-containing request - Merb" do
+  it "should generate the correct string to sign and signature with explicit version" do
+    version = '1.1'
+    obj = V1_1_SIGNING_OBJECT.clone
+
+    obj.proto_version = "1.0"
+    obj.proto_version.should == "1.0"
+    obj.canonicalize_request(version).should == V1_1_CANONICAL_REQUEST
+    obj.sign(PRIVATE_KEY, version).should == EXPECTED_SIGN_RESULT_V1_1
+  end
+
+  it "should not choke when signing a request for a long user id" do
+    lambda { LONG_SIGNING_OBJECT.sign(PRIVATE_KEY, '1.1') }.should_not raise_error
+  end
+
+end
+
+describe "Mixlib::Authentication::SignedHeaderAuth, protocol version 1.2" do
+
+  it "should generate the correct string to sign and signature" do
+    V1_2_SIGNING_OBJECT.proto_version.should == "1.2"
+    V1_2_SIGNING_OBJECT.canonicalize_request.should == V1_2_CANONICAL_REQUEST
+    V1_2_SIGNING_OBJECT.sign(PRIVATE_KEY).should == EXPECTED_SIGN_RESULT_V1_2
+
+    agent = double("ssh-agent")
+    agent.stub(:sign).and_return(SSH_AGENT_RESPONSE)
+    Net::SSH::Authentication::Agent.should_receive(:connect).and_return(agent)
+    V1_2_SIGNING_OBJECT.sign(PUBLIC_KEY).should == EXPECTED_SIGN_RESULT_V1_2
+  end
+
+  it "should generate the correct string to sign and signature with explicit version" do
+    version = '1.2'
+    obj = V1_2_SIGNING_OBJECT.clone
+
+    obj.proto_version = "1.0"
+    obj.proto_version.should == "1.0"
+    obj.canonicalize_request(version).should == V1_2_CANONICAL_REQUEST
+    obj.sign(PRIVATE_KEY, version).should == EXPECTED_SIGN_RESULT_V1_2
+  end
+
+  it "should not choke when signing a request for a long user id" do
+    lambda { LONG_SIGNING_OBJECT.sign(PRIVATE_KEY, '1.2') }.should_not raise_error
+  end
+
+  it "should choke when signing a request via ssh-agent and ssh-agent is not reachable" do
+    Net::SSH::Authentication::Agent.should_receive(:connect).and_raise(Net::SSH::Authentication::AgentNotAvailable.new "can't convert nil into String")
+    lambda{ V1_2_SIGNING_OBJECT.sign(PUBLIC_KEY) }.should raise_error
+  end
+
+  it "should choke when signing a request via ssh-agent and the key is not loaded" do
+    agent = double("ssh-agent")
+    agent.stub(:sign).and_raise(Net::SSH::Authentication::AgentError.new "agent could not sign data with requested identity")
+    Net::SSH::Authentication::Agent.should_receive(:connect).and_return(agent)
+    lambda{ V1_2_SIGNING_OBJECT.sign(PUBLIC_KEY) }.should raise_error
+  end
+
+end
+
+describe "Mixlib::Authentication::SignedHeaderAuth, any protocol version" do
+  
+  it "should choke when signing a request with a bad version" do
+    lambda { V1_1_SIGNING_OBJECT.sign(PRIVATE_KEY, 'poo') }.should raise_error
+  end
+
+end
+
+describe "Mixlib::Authentication::SignatureVerification, protocol version 1.0" do
+
+  it "should authenticate a file-containing request - merb" do
+    request_params = MERB_REQUEST_PARAMS.clone
+    request_params["file"] =
+      { "size"=>MockFile.length, "content_type"=>"application/octet-stream", "filename"=>"zsh.tar.gz", "tempfile"=>MockFile.new }
+
+    mock_request = MockRequest.new(PATH, request_params, MERB_HEADERS_V1_0, "")
+    Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
+
+    service = Mixlib::Authentication::SignatureVerification.new
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
+    res.should_not be_nil
+  end
+
+  it "should authenticate a file-containing request - passenger" do
+    request_params = PASSENGER_REQUEST_PARAMS.clone
+    request_params["tarball"] = MockFile.new
+
+    mock_request = MockRequest.new(PATH, request_params, PASSENGER_HEADERS_V1_0, "")
+    Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
+
+    auth_req = Mixlib::Authentication::SignatureVerification.new
+    res = auth_req.authenticate_user_request(mock_request, PUBLIC_KEY)
+    res.should_not be_nil
+  end
+  
+  it "should authenticate a normal (post body) request - merb" do
+    mock_request = MockRequest.new(PATH, MERB_REQUEST_PARAMS, MERB_HEADERS_V1_0, BODY)
+    Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
+
+    service = Mixlib::Authentication::SignatureVerification.new
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
+    res.should_not be_nil
+  end
+  
+  it "should authenticate with deprecated algorithm metadata specified in header" do
+    headers = MERB_HEADERS_V1_0.clone
+    headers["HTTP_X_OPS_SIGN"] = 'algorithm=sha1;version=1.0;'
+    mock_request = MockRequest.new(PATH, MERB_REQUEST_PARAMS, headers, BODY)
+    Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
+
+    service = Mixlib::Authentication::SignatureVerification.new
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
+    res.should_not be_nil
+  end
+  
+end
+
+describe "Mixlib::Authentication::SignatureVerification, protocol version 1.1" do
+
+  it "should authenticate a file-containing request - merb" do
     request_params = MERB_REQUEST_PARAMS.clone
     request_params["file"] =
       { "size"=>MockFile.length, "content_type"=>"application/octet-stream", "filename"=>"zsh.tar.gz", "tempfile"=>MockFile.new }
@@ -137,39 +226,95 @@ describe "Mixlib::Authentication::SignatureVerification" do
     Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
 
     service = Mixlib::Authentication::SignatureVerification.new
-    res = service.authenticate_user_request(mock_request, @user_private_key)
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
     res.should_not be_nil
   end
 
-  it "should authenticate a File-containing request from a v1.0 client - Passenger" do
+  it "should authenticate a file-containing request - passenger" do
     request_params = PASSENGER_REQUEST_PARAMS.clone
     request_params["tarball"] = MockFile.new
 
-    mock_request = MockRequest.new(PATH, request_params, PASSENGER_HEADERS_V1_0, "")
+    mock_request = MockRequest.new(PATH, request_params, PASSENGER_HEADERS_V1_1, "")
     Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
 
     auth_req = Mixlib::Authentication::SignatureVerification.new
-    res = auth_req.authenticate_user_request(mock_request, @user_private_key)
+    res = auth_req.authenticate_user_request(mock_request, PUBLIC_KEY)
     res.should_not be_nil
   end
-
-  it "should authenticate a normal (post body) request - Merb" do
+  
+  it "should authenticate a normal (post body) request - merb" do
     mock_request = MockRequest.new(PATH, MERB_REQUEST_PARAMS, MERB_HEADERS_V1_1, BODY)
     Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
 
     service = Mixlib::Authentication::SignatureVerification.new
-    res = service.authenticate_user_request(mock_request, @user_private_key)
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
     res.should_not be_nil
   end
-
-  it "should authenticate a normal (post body) request from a v1.0 client - Merb" do
-    mock_request = MockRequest.new(PATH, MERB_REQUEST_PARAMS, MERB_HEADERS_V1_0, BODY)
+  
+  it "should authenticate with deprecated algorithm metadata specified in header" do
+    headers = MERB_HEADERS_V1_1.clone
+    headers["HTTP_X_OPS_SIGN"] = 'algorithm=sha1;version=1.1;'
+    mock_request = MockRequest.new(PATH, MERB_REQUEST_PARAMS, headers, BODY)
     Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
 
     service = Mixlib::Authentication::SignatureVerification.new
-    res = service.authenticate_user_request(mock_request, @user_private_key)
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
     res.should_not be_nil
   end
+  
+
+end
+
+describe "Mixlib::Authentication::SignatureVerification, protocol version 1.2" do
+
+  it "should authenticate a file-containing request - merb" do
+    request_params = MERB_REQUEST_PARAMS.clone
+    request_params["file"] =
+      { "size"=>MockFile.length, "content_type"=>"application/octet-stream", "filename"=>"zsh.tar.gz", "tempfile"=>MockFile.new }
+
+    mock_request = MockRequest.new(PATH, request_params, MERB_HEADERS_V1_2, "")
+    Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
+
+    service = Mixlib::Authentication::SignatureVerification.new
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
+    res.should_not be_nil
+  end
+
+  it "should authenticate a file-containing request - passenger" do
+    request_params = PASSENGER_REQUEST_PARAMS.clone
+    request_params["tarball"] = MockFile.new
+
+    mock_request = MockRequest.new(PATH, request_params, PASSENGER_HEADERS_V1_2, "")
+    Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
+
+    auth_req = Mixlib::Authentication::SignatureVerification.new
+    res = auth_req.authenticate_user_request(mock_request, PUBLIC_KEY)
+    res.should_not be_nil
+  end
+
+  it "should authenticate a normal (post body) request - merb" do
+    mock_request = MockRequest.new(PATH, MERB_REQUEST_PARAMS, MERB_HEADERS_V1_2, BODY)
+    Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
+
+    service = Mixlib::Authentication::SignatureVerification.new
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
+    res.should_not be_nil
+  end
+
+  it "should authenticate with deprecated algorithm metadata specified in header" do
+    headers = MERB_HEADERS_V1_2.clone
+    headers["HTTP_X_OPS_SIGN"] = 'algorithm=sha1;version=1.2;'
+    mock_request = MockRequest.new(PATH, MERB_REQUEST_PARAMS, headers, BODY)
+    Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
+
+    service = Mixlib::Authentication::SignatureVerification.new
+    res = service.authenticate_user_request(mock_request, PUBLIC_KEY)
+    res.should_not be_nil
+  end
+
+end
+
+describe "Mixlib::Authentication::SignatureVerification, any protocol version" do
 
   it "shouldn't authenticate if an Authorization header is missing" do
     headers = MERB_HEADERS_V1_1.clone
@@ -179,14 +324,13 @@ describe "Mixlib::Authentication::SignatureVerification" do
     Time.stub!(:now).and_return(TIMESTAMP_OBJ)
 
     auth_req = Mixlib::Authentication::SignatureVerification.new
-    lambda {auth_req.authenticate_user_request(mock_request, @user_private_key)}.should raise_error(Mixlib::Authentication::AuthenticationError)
+    lambda {auth_req.authenticate_user_request(mock_request, PUBLIC_KEY)}.should raise_error(Mixlib::Authentication::AuthenticationError)
 
     auth_req.should_not be_a_valid_request
     auth_req.should_not be_a_valid_timestamp
     auth_req.should_not be_a_valid_signature
     auth_req.should_not be_a_valid_content_hash
   end
-
 
   it "shouldn't authenticate if Authorization header is wrong" do
     headers = MERB_HEADERS_V1_1.clone
@@ -196,7 +340,7 @@ describe "Mixlib::Authentication::SignatureVerification" do
     Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
 
     auth_req = Mixlib::Authentication::SignatureVerification.new
-    res = auth_req.authenticate_user_request(mock_request, @user_private_key)
+    res = auth_req.authenticate_user_request(mock_request, PUBLIC_KEY)
     res.should be_nil
 
     auth_req.should_not be_a_valid_request
@@ -210,7 +354,7 @@ describe "Mixlib::Authentication::SignatureVerification" do
     Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ - 1000)
 
     auth_req = Mixlib::Authentication::SignatureVerification.new
-    res = auth_req.authenticate_user_request(mock_request, @user_private_key)
+    res = auth_req.authenticate_user_request(mock_request, PUBLIC_KEY)
     res.should be_nil
     auth_req.should_not be_a_valid_request
     auth_req.should_not be_a_valid_timestamp
@@ -225,7 +369,7 @@ describe "Mixlib::Authentication::SignatureVerification" do
     Time.should_receive(:now).at_least(:once).and_return(TIMESTAMP_OBJ)
 
     auth_req = Mixlib::Authentication::SignatureVerification.new
-    res = auth_req.authenticate_user_request(mock_request, @user_private_key)
+    res = auth_req.authenticate_user_request(mock_request, PUBLIC_KEY)
     res.should be_nil
     auth_req.should_not be_a_valid_request
     auth_req.should_not be_a_valid_signature
@@ -263,6 +407,16 @@ V1_1_ARGS = {
   :proto_version => 1.1
 }
 
+V1_2_ARGS = {
+  :body => BODY,
+  :user_id => USER_ID,
+  :http_method => :post,
+  :timestamp => TIMESTAMP_ISO8601,    # fixed timestamp so we get back the same answer each time.
+  :file => MockFile.new,
+  :path => PATH,
+  :proto_version => 1.2
+}
+
 LONG_PATH_LONG_USER_ARGS = {
   :body => BODY,
   :user_id => "A" * 200,
@@ -294,13 +448,24 @@ X_OPS_AUTHORIZATION_LINES = [
 "FDlbAG7H8Dmvo+wBxmtNkszhzbBnEYtuwQqT8nM/8A=="
 ]
 
+X_OPS_AUTHORIZATION_LINES_V1_2 = [
+"HtjhPysvmPf7mFHZ+Ze4rLMucDv4ImPxv5kdJghpVwLo9tuE6VSmbuh3tIBp",
+"OmVH1sKOqyv6x5fkLaHq0FIYTEgcdXrN86rkFJBvExRzOuL7JHGXKIIzohc9",
+"BZBcF2LAGv2UY33TMXLhQYIIKh/5uWYZ7QsHjadgWo5nEiFpiy5VCoMKidmr",
+"DH7jYUZeXCFMgfsLlN6mlilc/iAGnktJwhAQPvIDgJS1cOHqFeWzaU2FRjvQ",
+"h6AUrsvhJ6C/5uJu6h0DT4uk5w5uVameyI/Cs+0KI/XLCk27dOl4X+SqBN9D",
+"FDp0m8rzMtOdsPkO/IAgbdpHTWoh8AXmPhh8t6+PfQ=="
+]
+
+SSH_AGENT_RESPONSE = "\x00\x00\x00\assh-rsa\x00\x00\x01\x00\x1E\xD8\xE1?+/\x98\xF7\xFB\x98Q\xD9\xF9\x97\xB8\xAC\xB3.p;\xF8\"c\xF1\xBF\x99\x1D&\biW\x02\xE8\xF6\xDB\x84\xE9T\xA6n\xE8w\xB4\x80i:eG\xD6\xC2\x8E\xAB+\xFA\xC7\x97\xE4-\xA1\xEA\xD0R\x18LH\x1Cuz\xCD\xF3\xAA\xE4\x14\x90o\x13\x14s:\xE2\xFB$q\x97(\x823\xA2\x17=\x05\x90\\\x17b\xC0\x1A\xFD\x94c}\xD31r\xE1A\x82\b*\x1F\xF9\xB9f\x19\xED\v\a\x8D\xA7`Z\x8Eg\x12!i\x8B.U\n\x83\n\x89\xD9\xAB\f~\xE3aF^\\!L\x81\xFB\v\x94\xDE\xA6\x96)\\\xFE \x06\x9EKI\xC2\x10\x10>\xF2\x03\x80\x94\xB5p\xE1\xEA\x15\xE5\xB3iM\x85F;\xD0\x87\xA0\x14\xAE\xCB\xE1'\xA0\xBF\xE6\xE2n\xEA\x1D\x03O\x8B\xA4\xE7\x0EnU\xA9\x9E\xC8\x8F\xC2\xB3\xED\n#\xF5\xCB\nM\xBBt\xE9x_\xE4\xAA\x04\xDFC\x14:t\x9B\xCA\xF32\xD3\x9D\xB0\xF9\x0E\xFC\x80 m\xDAGMj!\xF0\x05\xE6>\x18|\xB7\xAF\x8F}"
+
 # We expect Mixlib::Authentication::SignedHeaderAuth#sign to return this
 # if passed the BODY above, based on version
 
 EXPECTED_SIGN_RESULT_V1_0 = {
   "X-Ops-Content-Hash"=>X_OPS_CONTENT_HASH,
   "X-Ops-Userid"=>USER_ID,
-  "X-Ops-Sign"=>"algorithm=sha1;version=1.0;",
+  "X-Ops-Sign"=>"version=1.0;",
   "X-Ops-Authorization-1"=>X_OPS_AUTHORIZATION_LINES_V1_0[0],
   "X-Ops-Authorization-2"=>X_OPS_AUTHORIZATION_LINES_V1_0[1],
   "X-Ops-Authorization-3"=>X_OPS_AUTHORIZATION_LINES_V1_0[2],
@@ -313,13 +478,26 @@ EXPECTED_SIGN_RESULT_V1_0 = {
 EXPECTED_SIGN_RESULT_V1_1 = {
   "X-Ops-Content-Hash"=>X_OPS_CONTENT_HASH,
   "X-Ops-Userid"=>USER_ID,
-  "X-Ops-Sign"=>"algorithm=sha1;version=1.1;",
+  "X-Ops-Sign"=>"version=1.1;",
   "X-Ops-Authorization-1"=>X_OPS_AUTHORIZATION_LINES[0],
   "X-Ops-Authorization-2"=>X_OPS_AUTHORIZATION_LINES[1],
   "X-Ops-Authorization-3"=>X_OPS_AUTHORIZATION_LINES[2],
   "X-Ops-Authorization-4"=>X_OPS_AUTHORIZATION_LINES[3],
   "X-Ops-Authorization-5"=>X_OPS_AUTHORIZATION_LINES[4],
   "X-Ops-Authorization-6"=>X_OPS_AUTHORIZATION_LINES[5],
+  "X-Ops-Timestamp"=>TIMESTAMP_ISO8601
+}
+
+EXPECTED_SIGN_RESULT_V1_2 = {
+  "X-Ops-Content-Hash"=>X_OPS_CONTENT_HASH,
+  "X-Ops-Userid"=>USER_ID,
+  "X-Ops-Sign"=>"version=1.2;",
+  "X-Ops-Authorization-1"=>X_OPS_AUTHORIZATION_LINES_V1_2[0],
+  "X-Ops-Authorization-2"=>X_OPS_AUTHORIZATION_LINES_V1_2[1],
+  "X-Ops-Authorization-3"=>X_OPS_AUTHORIZATION_LINES_V1_2[2],
+  "X-Ops-Authorization-4"=>X_OPS_AUTHORIZATION_LINES_V1_2[3],
+  "X-Ops-Authorization-5"=>X_OPS_AUTHORIZATION_LINES_V1_2[4],
+  "X-Ops-Authorization-6"=>X_OPS_AUTHORIZATION_LINES_V1_2[5],
   "X-Ops-Timestamp"=>TIMESTAMP_ISO8601
 }
 
@@ -338,6 +516,23 @@ MERB_REQUEST_PARAMS = {
   "name"=>"zsh", "action"=>"create", "controller"=>"chef_server_api/cookbooks",
   "organization_id"=>"local-test-org", "requesting_actor_id"=>REQUESTING_ACTOR_ID,
 }
+
+# Tis is what will be in request.env for the Merb case.
+MERB_HEADERS_V1_2 = {
+  # These are used by signatureverification.
+  "HTTP_HOST"=>"127.0.0.1",
+  "HTTP_X_OPS_SIGN"=>"version=1.2",
+  "HTTP_X_OPS_REQUESTID"=>"127.0.0.1 1258566194.85386",
+  "HTTP_X_OPS_TIMESTAMP"=>TIMESTAMP_ISO8601,
+  "HTTP_X_OPS_CONTENT_HASH"=>X_OPS_CONTENT_HASH,
+  "HTTP_X_OPS_USERID"=>USER_ID,
+  "HTTP_X_OPS_AUTHORIZATION_1"=>X_OPS_AUTHORIZATION_LINES_V1_2[0],
+  "HTTP_X_OPS_AUTHORIZATION_2"=>X_OPS_AUTHORIZATION_LINES_V1_2[1],
+  "HTTP_X_OPS_AUTHORIZATION_3"=>X_OPS_AUTHORIZATION_LINES_V1_2[2],
+  "HTTP_X_OPS_AUTHORIZATION_4"=>X_OPS_AUTHORIZATION_LINES_V1_2[3],
+  "HTTP_X_OPS_AUTHORIZATION_5"=>X_OPS_AUTHORIZATION_LINES_V1_2[4],
+  "HTTP_X_OPS_AUTHORIZATION_6"=>X_OPS_AUTHORIZATION_LINES_V1_2[5],
+}.merge(OTHER_HEADERS)
 
 # Tis is what will be in request.env for the Merb case.
 MERB_HEADERS_V1_1 = {
@@ -379,6 +574,22 @@ PASSENGER_REQUEST_PARAMS = {
   "controller"=>"api/v1/cookbooks",
   "cookbook"=>"{\"category\":\"databases\"}",
 }
+
+PASSENGER_HEADERS_V1_2 = {
+  # These are used by signatureverification.
+  "HTTP_HOST"=>"127.0.0.1",
+  "HTTP_X_OPS_SIGN"=>"version=1.2",
+  "HTTP_X_OPS_REQUESTID"=>"127.0.0.1 1258566194.85386",
+  "HTTP_X_OPS_TIMESTAMP"=>TIMESTAMP_ISO8601,
+  "HTTP_X_OPS_CONTENT_HASH"=>X_OPS_CONTENT_HASH,
+  "HTTP_X_OPS_USERID"=>USER_ID,
+  "HTTP_X_OPS_AUTHORIZATION_1"=>X_OPS_AUTHORIZATION_LINES_V1_2[0],
+  "HTTP_X_OPS_AUTHORIZATION_2"=>X_OPS_AUTHORIZATION_LINES_V1_2[1],
+  "HTTP_X_OPS_AUTHORIZATION_3"=>X_OPS_AUTHORIZATION_LINES_V1_2[2],
+  "HTTP_X_OPS_AUTHORIZATION_4"=>X_OPS_AUTHORIZATION_LINES_V1_2[3],
+  "HTTP_X_OPS_AUTHORIZATION_5"=>X_OPS_AUTHORIZATION_LINES_V1_2[4],
+  "HTTP_X_OPS_AUTHORIZATION_6"=>X_OPS_AUTHORIZATION_LINES_V1_2[5],
+}.merge(OTHER_HEADERS)
 
 PASSENGER_HEADERS_V1_1 = {
   # These are used by signatureverification.
@@ -458,6 +669,7 @@ YlkUQYXhy9JixmUUKtH+NXkKX7Lyc8XYw5ETr7JBT3ifs+G7HruDjVG78EJVojbd
 EOS
 
 PRIVATE_KEY = OpenSSL::PKey::RSA.new(PRIVATE_KEY_DATA)
+PUBLIC_KEY = OpenSSL::PKey::RSA.new(PUBLIC_KEY_DATA)
 
 V1_0_CANONICAL_REQUEST_DATA = <<EOS
 Method:POST
@@ -477,6 +689,16 @@ X-Ops-UserId:#{DIGESTED_USER_ID}
 EOS
 V1_1_CANONICAL_REQUEST = V1_1_CANONICAL_REQUEST_DATA.chomp
 
+V1_2_CANONICAL_REQUEST_DATA = <<EOS
+Method:POST
+Hashed Path:#{HASHED_CANONICAL_PATH}
+X-Ops-Content-Hash:#{HASHED_BODY}
+X-Ops-Timestamp:#{TIMESTAMP_ISO8601}
+X-Ops-UserId:#{DIGESTED_USER_ID}
+EOS
+V1_2_CANONICAL_REQUEST = V1_2_CANONICAL_REQUEST_DATA.chomp
+
+V1_2_SIGNING_OBJECT = Mixlib::Authentication::SignedHeaderAuth.signing_object(V1_2_ARGS)
 V1_1_SIGNING_OBJECT = Mixlib::Authentication::SignedHeaderAuth.signing_object(V1_1_ARGS)
 V1_0_SIGNING_OBJECT = Mixlib::Authentication::SignedHeaderAuth.signing_object(V1_0_ARGS)
 LONG_SIGNING_OBJECT = Mixlib::Authentication::SignedHeaderAuth.signing_object(LONG_PATH_LONG_USER_ARGS)
