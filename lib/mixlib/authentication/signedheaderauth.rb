@@ -27,7 +27,44 @@ require 'net/ssh'
 module Mixlib
   module Authentication
 
+
+      # The following duck tape code which accounts for ruby's missing method overloading
+      # is written by knut from stackoverflow.com (http://stackoverflow.com/users/676874/knut)
+      # see his/her answer in this thread: http://stackoverflow.com/questions/10156919/overload-in-ruby
+      module OverloadDuckTape
+        class OverloadError < ArgumentError; end
+        
+        def def_overload( methodname)
+          define_method(methodname){|*x|
+            methname = "xxx"
+            methname = "#{methodname}_#{x.size}#{x.map{|p| p.class.to_s}.join('_')}"
+            if respond_to?(methname)
+              send methname, *x
+            elsif respond_to?("#{methodname}_#{x.size}")
+              send "#{methodname}_#{x.size}", *x
+            else
+              raise OverloadError, "#{methodname} not defined for #{x.size} parameters"
+            end
+          }
+        end
+        
+        def overload_method( methodname, *args, &proc )
+           types = []
+           args.each{|arg| types << arg.to_s}
+           define_method("#{methodname}_#{proc.arity}#{types.join('_')}".to_sym, &proc )
+        end
+      end
+      #class X
+      #  def_overload :ometh
+      #  overload_method(:ometh){ "Called me with no parameter" }
+      #  overload_method(:ometh, String ){ |p1| "Called me with one string parameter (#{p1.      …inspect})" }
+      #  overload_method(:ometh ){ |p1| "Called me with one parameter (#{p1.inspect})" }
+      #  overload_method(:ometh){ |p1,p2| "Called me with two parameter (#{p1.inspect}, #{p2.    …inspect})" }
+      #end
+
     module SignedHeaderAuth
+
+      extend OverloadDuckTape
 
       NULL_ARG = Object.new
       SUPPORTED_VERSIONS = ['1.0', '1.1', '1.2'].freeze
@@ -70,14 +107,42 @@ module Mixlib
         DEFAULT_PROTO_VERSION
       end
 
+      # Deprecate this API
+      def algorithm
+        Mixlib::Authentication::Log.warn("DEPRECATED: Don't use algorithm() any more. May be dropped in future releases.")
+        'sha1'
+      end
+
+      def_overload :sign
+
+      # Deprecate this API
+      # former: sign(private_key, sign_algorithm=algorithm, sign_version=proto_version)
+      overload_method(:sign) do |private_key, sign_algorithm, sign_version|
+        Mixlib::Authentication::Log.warn("DEPRECATED: Use the sign(keypair, sign_version=proto_version) API instead.")
+        sign(private_key, sign_version)
+      end
+
       # Build the canonicalized request based on the method, other headers, etc.
       # compute the signature from the request, using the looked-up user secret
       # ====Parameters
       # keypair<OpenSSL::PKey::RSA>:: user's RSA keypair. The OpenSSL::PKey::RSA
       # container can either be filled with a private/public keypair or just a
-      # public key. From x-ops protocol version 1.2 on the sign method will look
+      # public key. With x-ops protocol version 1.2 the sign method will look
       # out to sign the request via a ssh-agent, if only a public key is present.
-      def sign(keypair, sign_version=proto_version)
+      overload_method(:sign) do |private_key|
+        sign(private_key, proto_version)
+      end
+
+      overload_method(:sign) do |keypair, sign_version|
+      begin
+        # This could either be legal usage with a version as second argument
+        # or deprecated if sign_algorithm as second argument. Since there was only
+        # one possible sign_algorithm, it is easy to detect.
+        if sign_version == 'sha1'
+          Mixlib::Authentication::Log.warn("DEPRECATED: Use the sign(keypair, sign_version=proto_version) API instead.")
+          sign_version = proto_version
+        end
+
         header_hash = {
           "X-Ops-Sign" => "version=#{sign_version};",
           "X-Ops-Userid" => user_id,
@@ -86,13 +151,13 @@ module Mixlib
         }
         string_to_sign = canonicalize_request(sign_version)
         Mixlib::Authentication::Log.debug "Canonicalized request to sign: '#{string_to_sign}'\nHeader hash: #{header_hash.inspect}"
-        
+
         # Sign
         case sign_version
         when '1.0', '1.1'
           if keypair.private?
             Mixlib::Authentication::Log.debug "Private key supplied, signing with SHA1 digester and x-ops homebrew signature scheme."
-            
+
             signature = Base64.encode64(keypair.private_encrypt(string_to_sign)).chomp
           else
             raise AuthenticationError, "No private key supplied. Protocol version #{sign_version} only supports usage with private keys!"
@@ -132,6 +197,7 @@ module Mixlib
         Mixlib::Authentication::Log.debug "Failed to sign request: #{e.class.name}: #{e.message}"
         raise e
       end
+      end #block
 
       # Build the canonicalized time based on utc & iso8601
       #

@@ -25,6 +25,7 @@ require 'mixlib/authentication/signedheaderauth'
 
 module Mixlib
   module Authentication
+
     SignatureResponse = Struct.new(:name)
 
     class SignatureVerification
@@ -49,6 +50,7 @@ module Mixlib
       def_delegator :@auth_request, :request
 
       include Mixlib::Authentication::SignedHeaderAuth
+      extend Mixlib::Authentication::OverloadDuckTape
 
       V1_2_SUPPORTED_DIGESTER_ALGORITHMS = ['SHA1','MD5'].freeze
       
@@ -134,12 +136,16 @@ module Mixlib
         end
       end
 
+      def_overload :verify_signature
+
       # Deprecate this API.
-      def verify_signature(algorithm, version)
+      overload_method(:verify_signature) do |algorithm, version|
         Mixlib::Authentication::Log.warn("DEPRECATED: Use the verify_signature(version) API instead.")
+        verify_signature(version)
       end
 
-      def verify_signature(version)
+      overload_method(:verify_signature) do |version|
+      begin
         expected_block = canonicalize_request(version)
         signature = Base64.decode64(request_signature)
 
@@ -195,7 +201,7 @@ module Mixlib
             raise AuthenticationError, "Bad digester '#{digest_algorithm}' (allowed for protocol version 1.2: #{V1_2_SUPPORTED_DIGESTER_ALGORITHMS.inspect})"
           end
 
-          digester = OpenSSL::Digest.class_eval(digest_algorithm).new
+          digester = OpenSSL::Digest.const_get(digest_algorithm).new
 
           # 3. Verify
           @valid_signature = @user_secret.verify(digester, signature, expected_block)
@@ -210,6 +216,7 @@ module Mixlib
         Mixlib::Authentication::Log.debug("Failed to verify request signature: #{e.class.name}: #{e.message}")
         @valid_signature = false
       end
+      end #block
 
       def verify_timestamp
         @valid_timestamp = timestamp_within_bounds?(Time.parse(timestamp), Time.now)
